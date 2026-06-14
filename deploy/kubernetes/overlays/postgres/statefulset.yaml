@@ -3,19 +3,19 @@ kind: StatefulSet
 metadata:
   name: postgres
   labels:
-    app: omnigent
+    app: omnigent-postgres
     component: postgres
 spec:
   serviceName: postgres
   replicas: 1
   selector:
     matchLabels:
-      app: omnigent
+      app: omnigent-postgres
       component: postgres
   template:
     metadata:
       labels:
-        app: omnigent
+        app: omnigent-postgres
         component: postgres
     spec:
       containers:

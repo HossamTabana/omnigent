@@ -34,8 +34,12 @@ Use this path when you have a managed Postgres (RDS, Cloud SQL, Neon, etc.).
    OMNIGENT_ACCOUNTS_COOKIE_SECRET: "$(openssl rand -hex 32)"
    ```
 
-2. **Edit the Ingress hostname** — replace `omnigent.example.com` in
-   `base/ingress.yaml` with your actual domain.
+2. **Edit the Ingress** — replace `omnigent.example.com` in `base/ingress.yaml`
+   with your actual domain. The Ingress requests a TLS cert from a cert-manager
+   ClusterIssuer named `letsencrypt-prod` (the `cert-manager.io/cluster-issuer`
+   annotation). That issuer is **not** shipped here — create it first, or change
+   the annotation to match an issuer you already have. Without it cert-manager
+   logs `IssuerNotFound` and no certificate is issued.
 
 3. **Apply:**
 
@@ -43,13 +47,11 @@ Use this path when you have a managed Postgres (RDS, Cloud SQL, Neon, etc.).
    kubectl kustomize deploy/kubernetes/base/ | kubectl apply -f -
    ```
 
-4. **Admin password** prints once in the first-boot logs:
-
-   ```bash
-   kubectl logs -n omnigent deploy/omnigent | grep "password:"
-   ```
-
-   Also written to `/data/admin-credentials` on the volume.
+4. **Create the first admin.** Open the app (via your Ingress host, or
+   port-forward for a quick check — see
+   [Verify the deployment](#verify-the-deployment)). With the default `accounts`
+   provider the first visitor claims the instance: the Setup screen prompts for
+   a username + password, and whoever finishes it first becomes the admin.
 
 ## Deploy with in-cluster Postgres
 
@@ -72,6 +74,37 @@ with its own 10 Gi PVC. Good for dev/testing clusters.
    ```bash
    kubectl kustomize deploy/kubernetes/overlays/postgres/ | kubectl apply -f -
    ```
+
+## Verify the deployment
+
+Check the rollout and reach the server without a public domain:
+
+```bash
+kubectl get pods -n omnigent          # omnigent (and, with the overlay, postgres) → Running
+kubectl rollout status deploy/omnigent -n omnigent
+kubectl logs -n omnigent deploy/omnigent          # server logs
+
+# Port-forward the Service and open the app locally:
+kubectl port-forward -n omnigent svc/omnigent 8000:80
+# → http://localhost:8000   (health check: curl localhost:8000/health → {"status":"ok"})
+```
+
+The first boot runs database migrations before the server starts listening; the
+pod may restart once if the liveness probe fires during that window (see
+[Resource sizing](#resource-sizing)).
+
+## Next steps: connect a host
+
+The server is the control plane — agents run on **hosts** that register with it.
+A brand-new deployment has none, so connect at least one machine:
+
+```bash
+omnigent login https://omnigent.example.com          # authenticate the CLI
+omnigent host  --server https://omnigent.example.com # register this machine
+```
+
+The host then appears in the web UI when you start a new chat. See the
+[main README](../../README.md) for the full host/auth reference.
 
 ## Use your own IdP instead (OIDC)
 
