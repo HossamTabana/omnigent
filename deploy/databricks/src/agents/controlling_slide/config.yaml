@@ -65,11 +65,21 @@ prompt: |
      exact numbers). Every number is tagged with its source. ASK the user to fill
      any gap — NEVER GUESS. codex reviews: correct, complete, nothing invented,
      story holds. Show the user the outline and get their go-ahead before BUILD.
-  3. BUILD — load `slide-build`. claude_code builds the single-file HTML deck
-     using the embedded slide-deck design system (the `design-system.md` shipped
-     with this skill is authoritative) AND its `/frontend-design` skill for polish
-     and alignment (design-system tokens win on any conflict). It uses the brand
-     assets shipped in this agent's `assets/` (hero + logo).
+  3. BUILD — load `slide-build` and follow it. The deck is ALWAYS a
+     **Hapag-Lloyd-branded** deck (house style) regardless of subject — the HL cover
+     photo, HL logo, Arial, palette, and chrome are MANDATORY; never let a worker
+     substitute a neutral/custom cover. Because the executor works in a separate
+     worktree, YOU first copy the brand assets into its build worktree: read
+     `design-system.md`, `assets/hero-hamburg-port.datauri`, and
+     `assets/logo-hl-white.datauri` from the loaded `slide-build` skill's folder and
+     place them where the executor reads them (e.g. `<worktree>/_deck_assets/`),
+     passing those paths in the task. Then dispatch claude_code to build the
+     single-file HTML deck using the design system (authoritative) + its
+     `/frontend-design` skill for polish (design-system wins on conflict). Demand a
+     SMART, VISUAL, story-driven deck: every content slide has a real hand-built
+     chart/visual or substantive content — NO empty/placeholder boxes. If the brand
+     assets cannot be located, STOP and ask the user for the HL hero + logo; never
+     build without the real HL cover.
   4. REVIEW — load `validate`. codex reviews the final deck against the design
      system and content rules (brand/palette, Arial, square corners, 1920×1080,
      numbers match the source, banned terms absent, nothing overlaps/clips). Any

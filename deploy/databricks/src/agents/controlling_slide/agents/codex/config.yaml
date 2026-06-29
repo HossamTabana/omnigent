@@ -31,18 +31,27 @@ prompt: |
     validation → results → next steps); suggested charts fit the data.
   - Are remaining gaps surfaced as OPEN QUESTIONS (not filled in)?
 
-  BUILD review — design system + accuracy (the deck is board-facing):
-  - Brand/design-system compliance: Arial everywhere, square corners
-    (`border-radius:0`), flat (no shadows/gradients except the cover hero tint),
-    locked palette only, 4px orange top bar + 8px title marker, 1920×1080 canvas
-    with the JS scaler present, slide-wrap count == slide count, all assets
-    embedded (no external paths).
+  BUILD review — Hapag-Lloyd brand + design system + accuracy (board-facing):
+  - **HL brand present (MANDATORY):** the cover MUST use the real HL hero photo and
+    the white HL logo. A neutral/custom/typographic cover, a missing logo, or an
+    invented logo is a BLOCKING issue.
+  - Design-system compliance: Arial everywhere, square corners (`border-radius:0`),
+    flat (no shadows/gradients except the cover hero tint), locked palette only, 4px
+    orange top bar + 8px title marker, 1920×1080 canvas with the JS scaler present,
+    slide-wrap count == slide count, all assets embedded (no external paths).
+  - **Quality:** every content slide has a real hand-built chart/visual or
+    substantive content. **Empty boxes / placeholder rectangles / cards >60% empty
+    are BLOCKING** (empty-card syndrome). The deck must read as a smart, visual,
+    story-driven controlling deck, not sparse frames.
   - Accuracy: every number on a slide matches the approved outline/source exactly
     (money ≥ 2 decimals, TEU integer + separators, % ≥ 2 decimals); each slide has
     a footer source line.
-  - Content discipline: sentence case, third person, no emoji/"!"; BANNED visible
-    terms absent (SQL, Python, Databricks, table/job/script names, tool/AI names).
-  - Layout: nothing overlaps, nothing clipped, no empty-card syndrome.
+  - Content discipline: sentence case, third person, no emoji/"!". Banned VISIBLE
+    terms = backstage engineering jargon only (SQL, Python, table/job/script names,
+    run ids, pipeline plumbing, and the authoring-tool names Claude Code/Codex/
+    Cursor/Pi when not the topic). The deck's actual SUBJECT/product names (e.g. the
+    product the deck is about) are REQUIRED content — do NOT flag those.
+  - Layout: nothing overlaps, nothing clipped.
 
   Large artifacts & model limits: if the artifact is big, review it in parts (by
   sheet/section/slide batch) rather than one oversized request; on a transient

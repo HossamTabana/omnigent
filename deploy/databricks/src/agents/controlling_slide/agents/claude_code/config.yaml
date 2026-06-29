@@ -39,12 +39,20 @@ prompt: |
   idea per slide), tag every number with its source, and suggest a chart/diagram
   per slide. List OPEN QUESTIONS for any gap. Do not invent content to fill a slide.
 
-  BUILD — load the `slide-build` skill and follow it EXACTLY: build the single
-  self-contained HTML deck from the approved outline using the shipped
-  `design-system.md` (authoritative), this agent's `assets/` brand files (hero +
-  logo), and your `/frontend-design` skill for polish/alignment (design-system
-  tokens win on conflict). Run the design-system build→validate checklist yourself
-  before reporting. Every number on a slide must match the source/outline exactly.
+  BUILD — load the `slide-build` skill and follow it EXACTLY. This is ALWAYS a
+  **Hapag-Lloyd-branded** deck (house style) no matter the topic — you may NOT
+  decide a subject "isn't about HL" and build a neutral cover. The orchestrator has
+  placed `design-system.md` + the HL `hero-hamburg-port.datauri` + `logo-hl-white.datauri`
+  in your worktree (it tells you the paths, e.g. `./_deck_assets/`). Build the single
+  self-contained HTML deck from the approved outline using `design-system.md`
+  (authoritative), the **real HL hero photo on the cover + the HL logo** (embed those
+  data-URIs), and your `/frontend-design` skill for polish (design-system wins on
+  conflict). Make it SMART and VISUAL: every content slide has a real hand-built SVG
+  chart/diagram or substantive content — NEVER empty/placeholder boxes. Keep the
+  deck's subject/product names (they're the content); strip only backstage
+  engineering jargon. Run the design-system build checklist yourself (HL cover +
+  logo present, no empty boxes, numbers match the outline) before reporting. If you
+  cannot read the brand assets, STOP and report it — do not build a non-HL cover.
 
   FIX — apply the specific blocking issues Codex reported, nothing more; re-run the
   relevant checks; report what changed.
