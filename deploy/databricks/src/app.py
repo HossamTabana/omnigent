@@ -201,6 +201,19 @@ try:
     # OMNIGENT_AUTH_ENABLED in the deploy env (an explicit
     # provider always wins over the enable switch).
     os.environ.setdefault("OMNIGENT_AUTH_PROVIDER", "header")
+
+    # ── Owner-added built-in agents (NOT upstream) ─────────────
+    # Seed the bundled custom agent(s) under ./agents/ as always-available
+    # built-ins. OMNIGENT_BUILTIN_AGENT_DIRS is read at server startup by
+    # _ensure_extra_builtin_agents (omnigent/server/app.py) — an os.pathsep
+    # list of agent spec paths. Absolute path via __file__ so it resolves
+    # regardless of the container's working directory. To add more agents,
+    # append os.pathsep-joined paths. See CLAUDE.md "Omnigent agents".
+    _builtin_agents_dir = Path(__file__).resolve().parent / "agents"
+    _extra_agents = [str(p) for p in sorted(_builtin_agents_dir.glob("*")) if p.is_dir()]
+    if _extra_agents:
+        os.environ.setdefault("OMNIGENT_BUILTIN_AGENT_DIRS", os.pathsep.join(_extra_agents))
+
     auth_provider = create_auth_provider()
     app = create_app(
         agent_store=agent_store,
