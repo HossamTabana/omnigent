@@ -18,6 +18,7 @@ import {
   normalizeWorkspacePath,
   sessionsSharingDirectory,
   NewChatLandingScreen,
+  resetLandingDraft,
 } from "./NewChatDialog";
 import { CapabilitiesProvider } from "@/lib/CapabilitiesContext";
 import type { ServerInfo } from "@/lib/capabilities";
@@ -29,6 +30,7 @@ import { useDirectorySessions } from "@/hooks/useDirectorySessions";
 import { useRunnerHealthRegistration } from "@/hooks/RunnerHealthProvider";
 import type { Conversation } from "@/hooks/useConversations";
 import { setOmnigentHostConfig } from "@/lib/host";
+import { setPendingInitialPrompt } from "@/store/chatStore";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 // Only authenticatedFetch is stubbed (the create POST under test);
@@ -58,6 +60,13 @@ vi.mock("@/hooks/useConversations", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/hooks/useConversations")>()),
   useProjects: () => ({ data: [] }),
 }));
+// Partial mock: only spy on the first-message handoff so the "@"-mention
+// tests can assert the prepended attachment marker. Everything else
+// (composerAttachmentKey, useChatStore, …) stays real for the render tree.
+vi.mock("@/store/chatStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/store/chatStore")>()),
+  setPendingInitialPrompt: vi.fn(),
+}));
 
 const authenticatedFetchMock = vi.mocked(authenticatedFetch);
 const useHostsMock = vi.mocked(useHosts);
@@ -65,6 +74,7 @@ const useAvailableAgentsMock = vi.mocked(useAvailableAgents);
 const useHostFilesystemMock = vi.mocked(useHostFilesystem);
 const useDirectorySessionsMock = vi.mocked(useDirectorySessions);
 const useRunnerHealthMock = vi.mocked(useRunnerHealthRegistration);
+const setPendingInitialPromptMock = vi.mocked(setPendingInitialPrompt);
 
 const RECENT_KEY = "omnigent:recent-workspaces";
 
@@ -539,6 +549,7 @@ function setupLandingMocks() {
   useDirectorySessionsMock.mockReset();
   useRunnerHealthMock.mockReset();
   setOmnigentHostConfig({});
+  resetLandingDraft();
   localStorage.clear();
   // host_1's most-recent workspace seeds the field (so submit can enable
   // without manual picks). Tests that exercise the home fallback clear this.
@@ -637,6 +648,29 @@ describe("NewChatLandingScreen", () => {
     // the placeholder, the composer input would be absent and this fails.
     expect(screen.getByText("What should we do?")).toBeTruthy();
     expect(screen.getByTestId("new-chat-landing-input")).toBeTruthy();
+  });
+
+  it("preserves the typed message and attachments when the landing screen unmounts and remounts", () => {
+    // Navigating into an existing session and back unmounts the landing
+    // screen; the draft is stashed at module scope so the half-composed
+    // message and its attachments survive the round-trip instead of being
+    // discarded.
+    const first = renderLanding();
+    const box = screen.getByTestId("new-chat-landing-input") as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: "half-typed thought" } });
+    const file = new File(["data"], "diagram.png", { type: "image/png" });
+    fireEvent.change(screen.getByTestId("new-chat-landing-file-input"), {
+      target: { files: [file] },
+    });
+    expect(screen.getByText("diagram.png")).toBeTruthy();
+    first.unmount();
+
+    renderLanding();
+    expect((screen.getByTestId("new-chat-landing-input") as HTMLTextAreaElement).value).toBe(
+      "half-typed thought",
+    );
+    // The attachment chip re-renders from the restored draft.
+    expect(screen.getByText("diagram.png")).toBeTruthy();
   });
 
   it("enables submit only once a message, host, agent and valid workspace are set", async () => {
@@ -945,7 +979,9 @@ describe("NewChatLandingScreen", () => {
   });
 
   it("caps each footer chip label with truncate so a long label can't wrap the row", async () => {
-    renderLanding();
+    // Land with `?project=` so the (otherwise-hidden) project chip renders and
+    // its truncate cap can be asserted alongside the other chips.
+    renderLanding({}, "/?project=docs");
     await waitFor(() =>
       expect(screen.getByTestId("new-chat-landing-workspace-chip").textContent).toContain("repo"),
     );
@@ -1183,22 +1219,26 @@ describe("NewChatLandingScreen", () => {
     await waitFor(() => expect(screen.queryByTestId("new-chat-landing-error")).toBeNull());
   });
 
-  it("files the new session under a project picked in the composer chip", async () => {
+  it("hides the project chip in the normal new-session flow (no project pre-selected)", async () => {
+    // Without a `?project=` param the session is unfiled, so the chip is
+    // hidden entirely — the fresh new-session flow stays project-free.
+    renderLanding();
+
+    await screen.findByTestId("new-chat-landing-input");
+    expect(screen.queryByTestId("new-chat-landing-project-chip")).toBeNull();
+  });
+
+  it("files a pre-filled project chip's selection, and invalidates project sessions", async () => {
     // Both the create POST and the follow-up label PATCH read .ok / .json.
     authenticatedFetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ id: "conv_new" }),
     } as unknown as Response);
     const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
-    renderLanding();
+    // The chip only renders when a project is pre-selected (e.g. via the
+    // sidebar's per-project pencil), so land with `?project=`.
+    renderLanding({}, "/?project=docs");
 
-    // Open the project chip → "New project…" → type a name → commit.
-    fireEvent.click(screen.getByTestId("new-chat-landing-project-chip"));
-    fireEvent.click(screen.getByText("New project…"));
-    const nameInput = screen.getByPlaceholderText("Project name…");
-    fireEvent.change(nameInput, { target: { value: "docs" } });
-    fireEvent.keyDown(nameInput, { key: "Enter" });
-    // The chip reflects the pick.
     await waitFor(() =>
       expect(screen.getByTestId("new-chat-landing-project-chip").textContent).toContain("docs"),
     );
@@ -1228,6 +1268,22 @@ describe("NewChatLandingScreen", () => {
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["project-sessions"] }),
     );
     invalidateSpy.mockRestore();
+  });
+
+  it("hides the chip again when a pre-filled project is cleared to 'No project'", async () => {
+    // When shown, the picker still lets the user clear the selection; doing so
+    // empties `selectedProject` and the chip disappears (consistent with the
+    // "only show when selected" rule).
+    renderLanding({}, "/?project=docs");
+
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-project-chip").textContent).toContain("docs"),
+    );
+
+    fireEvent.click(screen.getByTestId("new-chat-landing-project-chip"));
+    fireEvent.click(screen.getByText("No project"));
+
+    await waitFor(() => expect(screen.queryByTestId("new-chat-landing-project-chip")).toBeNull());
   });
 
   it("pre-fills the project chip from the ?project= query param", async () => {
@@ -1647,5 +1703,280 @@ describe("NewChatLandingScreen attachments", () => {
     // state clears rather than sticking when moving between child elements.
     fireEvent.dragLeave(composer, { dataTransfer: { files: [] } });
     expect(screen.queryByText("Drop files here")).toBeNull();
+  });
+});
+
+// The "@"-file-mention browser on the launcher mirrors the in-session
+// composer, but its file source is the *host filesystem* (no session/runner
+// exists yet) and its paths are converted from the host's absolute form to
+// workspace-relative for the chip and the "[Attached: …]" marker.
+describe("NewChatLandingScreen @-file-mention", () => {
+  const ROOT = "/Users/corey/repo";
+  function dir(path: string): HostFilesystemEntry {
+    return {
+      name: path.split("/").pop() ?? "",
+      path,
+      type: "directory",
+      bytes: null,
+      modified_at: 0,
+    };
+  }
+  function file(path: string): HostFilesystemEntry {
+    return { name: path.split("/").pop() ?? "", path, type: "file", bytes: 10, modified_at: 0 };
+  }
+  // Path-aware listing: the workspace root holds an "omnigent" folder + a
+  // README; drilling into "omnigent" reveals a nested folder + a file. Keyed by
+  // the absolute path so drill-down and relative-path mapping are exercised for
+  // real (a fixed stub couldn't distinguish the two levels).
+  function mockFsByPath() {
+    useHostFilesystemMock.mockImplementation(((_hostId: string | null, path: string | null) => {
+      let entries: HostFilesystemEntry[] = [];
+      if (path === ROOT) entries = [dir(`${ROOT}/omnigent`), file(`${ROOT}/README.md`)];
+      else if (path === `${ROOT}/omnigent`)
+        entries = [dir(`${ROOT}/omnigent/inner`), file(`${ROOT}/omnigent/cli.py`)];
+      return {
+        data: { entries, truncated: false },
+        isLoading: false,
+        error: null,
+        isPlaceholderData: false,
+      };
+    }) as unknown as typeof useHostFilesystem);
+  }
+
+  beforeEach(() => {
+    setupLandingMocks();
+    setPendingInitialPromptMock.mockReset();
+    mockFsByPath();
+  });
+  afterEach(() => {
+    cleanup();
+    localStorage.clear();
+  });
+
+  function input() {
+    return screen.getByTestId("new-chat-landing-input");
+  }
+
+  it("opens the menu listing workspace files when '@' is typed (native agent)", async () => {
+    renderLanding();
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-workspace-chip").textContent).toContain("repo"),
+    );
+    fireEvent.change(input(), { target: { value: "@", selectionStart: 1 } });
+    // Host absolute paths are shown as workspace-relative rows (folders first).
+    expect(screen.getByTitle("Open omnigent")).toBeInTheDocument();
+    expect(screen.getByTitle("Attach README.md")).toBeInTheDocument();
+  });
+
+  it("does NOT open the menu for a non-native (SDK) agent", () => {
+    // Gate parity with the in-session composer: mentions are native-only.
+    mockAgents([
+      {
+        id: "sdk1",
+        name: "my-sdk-agent",
+        display_name: "SDK Agent",
+        description: null,
+        harness: "claude-sdk",
+        skills: [],
+      },
+    ]);
+    renderLanding();
+    fireEvent.change(input(), { target: { value: "@", selectionStart: 1 } });
+    expect(screen.queryByTitle("Open omnigent")).not.toBeInTheDocument();
+  });
+
+  it("drills into a folder and delivers the chosen file as a workspace-relative marker", async () => {
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "conv_new" }),
+    } as unknown as Response);
+    renderLanding();
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-workspace-chip").textContent).toContain("repo"),
+    );
+
+    fireEvent.change(input(), { target: { value: "@", selectionStart: 1 } });
+    // Nested files are hidden until the folder is opened (drill-down).
+    expect(screen.queryByTitle("Attach cli.py")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("Open omnigent"));
+    fireEvent.click(screen.getByTitle("Attach cli.py"));
+    // The chip shows the workspace-relative path, not the host-absolute one.
+    expect(screen.getByText("@omnigent/cli.py")).toBeInTheDocument();
+
+    fireEvent.change(input(), { target: { value: "explain this", selectionStart: 12 } });
+    fireEvent.click(screen.getByTestId("new-chat-landing-submit"));
+
+    // The contract: the first message carries "[Attached: <relpath>]" so the
+    // runner (rooted at the workspace) reads the on-disk file — relative, never
+    // the "/Users/corey/repo/…" absolute path the host filesystem returned.
+    await waitFor(() => expect(setPendingInitialPromptMock).toHaveBeenCalled());
+    const [, payload] = setPendingInitialPromptMock.mock.calls[0]!;
+    expect((payload as { text: string }).text).toBe("[Attached: omnigent/cli.py]\n\nexplain this");
+  });
+
+  it("suppresses stale parent rows while a drilled directory is still loading", async () => {
+    // ``useHostFilesystem`` keeps the previous directory's rows on screen as
+    // placeholder data while the next fetch is in flight (keepPreviousData):
+    // ``isLoading`` is false, only ``isPlaceholderData`` is true. If the menu
+    // rendered that placeholder it would show the *parent's* files as though
+    // they lived inside the drilled child, and a click/Enter would attach the
+    // wrong entry. The menu must collapse to "Loading…" until the child's own
+    // listing arrives.
+    const rootEntries = [dir(`${ROOT}/omnigent`), file(`${ROOT}/README.md`)];
+    useHostFilesystemMock.mockImplementation(((_hostId: string | null, path: string | null) => {
+      // Root resolves normally; the drilled path is still serving the parent's
+      // rows as placeholder data (the mid-fetch window we're regression-testing).
+      const isPlaceholderData = path !== ROOT;
+      return {
+        data: { entries: rootEntries, truncated: false },
+        isLoading: false,
+        error: null,
+        isPlaceholderData,
+      };
+    }) as unknown as typeof useHostFilesystem);
+
+    renderLanding();
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-workspace-chip").textContent).toContain("repo"),
+    );
+
+    fireEvent.change(input(), { target: { value: "@", selectionStart: 1 } });
+    // Root listing renders its rows.
+    expect(screen.getByTitle("Open omnigent")).toBeInTheDocument();
+    fireEvent.click(screen.getByTitle("Open omnigent"));
+
+    // Drilled-but-loading: the loading row shows and the parent's stale rows are
+    // gone (without the isPlaceholderData guard they'd appear as the child's).
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(screen.queryByTitle("Attach README.md")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("Open omnigent")).not.toBeInTheDocument();
+  });
+
+  it("attaches a whole folder with a trailing-slash marker", async () => {
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "conv_new" }),
+    } as unknown as Response);
+    renderLanding();
+    await waitFor(() =>
+      expect(screen.getByTestId("new-chat-landing-workspace-chip").textContent).toContain("repo"),
+    );
+
+    fireEvent.change(input(), { target: { value: "@", selectionStart: 1 } });
+    // The folder row's "+" button attaches the directory as a unit.
+    fireEvent.click(screen.getByLabelText("Attach whole folder omnigent"));
+    expect(screen.getByText("@omnigent/")).toBeInTheDocument();
+
+    fireEvent.change(input(), { target: { value: "review it", selectionStart: 9 } });
+    fireEvent.click(screen.getByTestId("new-chat-landing-submit"));
+
+    await waitFor(() => expect(setPendingInitialPromptMock).toHaveBeenCalled());
+    const [, payload] = setPendingInitialPromptMock.mock.calls[0]!;
+    expect((payload as { text: string }).text).toBe("[Attached: omnigent/]\n\nreview it");
+  });
+
+  it("removes a tagged chip when its ✕ is clicked", () => {
+    renderLanding();
+    fireEvent.change(input(), { target: { value: "@", selectionStart: 1 } });
+    fireEvent.click(screen.getByTitle("Attach README.md"));
+    expect(screen.getByText("@README.md")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Remove README.md"));
+    expect(screen.queryByText("@README.md")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Mobile agent picker
+//
+// Touch devices can't hover, so the desktop knob flyout (a Radix sub-menu
+// opened on hover) is unreachable there. Below the `md` breakpoint the picker
+// instead swaps its contents in place: tapping anywhere on a configurable row
+// drills into that agent's knobs on the same surface (and selects it), with a
+// Back row to return. jsdom's matchMedia mock always reports `false`, so these tests
+// force the mobile branch by stubbing it to match the `max-width` query that
+// `useIsMobileViewport()` reads.
+// ---------------------------------------------------------------------------
+
+/**
+ * Make `useIsMobileViewport()` report a mobile (max-md) viewport. Returns a
+ * restore fn. Only the `max-width` query matches, so `min-width` consumers
+ * (e.g. desktop checks) keep reading false.
+ */
+function forceMobileViewport(): () => void {
+  const real = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: /max-width/.test(query),
+    media: query,
+    onchange: null,
+    addListener: () => {},
+    removeListener: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    dispatchEvent: () => false,
+  })) as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = real;
+  };
+}
+
+describe("NewChatLandingScreen agent picker (mobile)", () => {
+  let restoreViewport: () => void;
+  beforeEach(() => {
+    setupLandingMocks();
+    restoreViewport = forceMobileViewport();
+  });
+  afterEach(() => {
+    restoreViewport();
+    cleanup();
+    localStorage.clear();
+  });
+
+  /** Open the picker (Radix opens on pointerdown). */
+  function openPicker(): void {
+    fireEvent.pointerDown(screen.getByTestId("new-chat-landing-agent-select"), { button: 0 });
+  }
+
+  it("drills into an agent's knobs in place when the row is tapped (no hover flyout) and selects it", () => {
+    renderLanding();
+    openPicker();
+    // The list is showing and the knobs are not — there's no hover flyout.
+    expect(screen.getByTestId("new-chat-landing-agent-a1")).toBeTruthy();
+    expect(screen.queryByTestId("new-chat-landing-approval-full-access")).toBeNull();
+    // Tap anywhere on a2 (Codex)'s row — its approval-mode knobs replace the
+    // list in place, and the tap also commits the pick.
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-a2"));
+    expect(screen.getByTestId("new-chat-landing-agent-config-page")).toBeTruthy();
+    expect(screen.getByTestId("new-chat-landing-approval-full-access")).toBeTruthy();
+    // The list was replaced (not flown out alongside), so the OTHER agent
+    // row is gone while the knobs page is up.
+    expect(screen.queryByTestId("new-chat-landing-agent-a1")).toBeNull();
+    // Tapping the row selected the agent too — the trigger reflects the pick.
+    expect(screen.getByTestId("new-chat-landing-agent-select").textContent).toContain("Codex");
+  });
+
+  it("returns to the agent list via Back without closing the menu", () => {
+    renderLanding();
+    openPicker();
+    // a1 (Claude Code) is configurable — tapping it drills into its knobs.
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-a1"));
+    expect(screen.getByTestId("new-chat-landing-permission-plan")).toBeTruthy();
+    // Back steps to the list rather than closing: both agents reappear and
+    // the knobs are gone.
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-config-back"));
+    expect(screen.getByTestId("new-chat-landing-agent-a1")).toBeTruthy();
+    expect(screen.getByTestId("new-chat-landing-agent-a2")).toBeTruthy();
+    expect(screen.queryByTestId("new-chat-landing-permission-plan")).toBeNull();
+  });
+
+  it("reopening after a drill-in lands back on the agent list", () => {
+    renderLanding();
+    openPicker();
+    fireEvent.click(screen.getByTestId("new-chat-landing-agent-a2"));
+    expect(screen.getByTestId("new-chat-landing-agent-config-page")).toBeTruthy();
+    // Close, then reopen — the menu resets to the list, never a stale page.
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    openPicker();
+    expect(screen.getByTestId("new-chat-landing-agent-a1")).toBeTruthy();
+    expect(screen.queryByTestId("new-chat-landing-agent-config-page")).toBeNull();
   });
 });

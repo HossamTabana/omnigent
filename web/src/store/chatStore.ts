@@ -171,6 +171,30 @@ export interface StashedPending {
   committedTexts: string[];
 }
 
+/**
+ * A workspace path queued for the composer's "@"-mention chips. ``isDir``
+ * marks a folder (delivered with a trailing ``/``); ``lineRange`` marks a
+ * specific span of a file (delivered as ``path:start-end``), e.g. from the
+ * file viewer's "Attach to agent" button.
+ */
+export interface ComposerAttachment {
+  path: string;
+  isDir: boolean;
+  lineRange?: { start: number; end: number };
+}
+
+/**
+ * Identity key for a composer attachment, used to dedup the queue and the
+ * drained chips. Keyed on path + dir-ness + line range (not path alone) so a
+ * whole-file attach and a partial-line attach of the same file — or two
+ * distinct line ranges from the file viewer — remain separate, while an exact
+ * re-attach is collapsed. The single source of truth for "same attachment?"
+ * across the store queue, the drain effect, and ``attachMention``.
+ */
+export function composerAttachmentKey(a: ComposerAttachment): string {
+  return `${a.path}|${a.isDir}|${a.lineRange ? `${a.lineRange.start}-${a.lineRange.end}` : ""}`;
+}
+
 export interface ChatState {
   // Reactive — subscribed to by UI components.
   conversationId: string | null;
@@ -247,6 +271,7 @@ export interface ChatState {
    * for the rest of the session lifetime.
    */
   sessionStatus: SessionStatus;
+  backgroundTaskCount: number;
   /**
    * Whether the active session is a native-terminal wrapper
    * (claude-native / codex-native), derived from the `omnigent.wrapper`
@@ -338,6 +363,13 @@ export interface ChatState {
   oldestItemId: string | null;
   /** Bubble that should pulse briefly (highlight on nav jump). */
   flashItemId: string | null;
+  /**
+   * Workspace files/folders queued to drop into the active composer's
+   * "@"-mention chips from outside the composer — e.g. the file viewer's
+   * "Attach to agent" button, which lives far from the composer in the tree.
+   * The composer drains this on change and clears it.
+   */
+  pendingComposerAttachments: ComposerAttachment[];
   /**
    * LLM model identifier from the bound agent's spec for the active
    * session, e.g. ``"anthropic/claude-sonnet-4-6"``. Populated from
@@ -518,6 +550,10 @@ export interface ChatState {
   loadMoreHistory: () => Promise<void>;
   /** Flash a bubble briefly; rapid calls reschedule so the latest target wins. */
   flashUserMessage: (itemId: string) => void;
+  /** Queue an "@"-mention chip into the active composer from outside it. */
+  addComposerAttachment: (attachment: ComposerAttachment) => void;
+  /** Drain the queued composer attachments (called by the composer). */
+  clearPendingComposerAttachments: () => void;
   /**
    * Compact the active session's context. Posts a ``compact`` event to the
    * server, which summarises the conversation history in-place. No-ops when
@@ -704,6 +740,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   interruptedResponseIds: [],
   status: "idle",
   sessionStatus: "idle",
+  backgroundTaskCount: 0,
   isNativeTerminalSession: false,
   nativeVendorOwnsModel: false,
   boundAgentId: null,
@@ -719,6 +756,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   loadingMoreHistory: false,
   oldestItemId: null,
   flashItemId: null,
+  pendingComposerAttachments: [],
   llmModel: null,
   sessionHarness: null,
   subAgentName: null,
@@ -774,6 +812,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ...s.pendingUserMessages,
         { tempId, content, ...(selfAuthor !== null ? { author: selfAuthor } : {}) },
       ],
+      // A new turn supersedes the prior turn's background-shell tally: the
+      // "N background tasks still running" label must give way to "Working…" the
+      // moment the user sends, not linger until the next status edge. The
+      // count is sticky (see the `session_status` handler) precisely so a
+      // trailing idle can't wipe it, so it has to be cleared explicitly here.
+      backgroundTaskCount: 0,
     }));
 
     // Pin the destination before joining the send chain: a stalled prior
@@ -868,6 +912,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (!alreadyStreaming) {
             patch.status = "idle";
             patch.sessionStatus = "idle";
+            patch.backgroundTaskCount = 0;
           }
           return patch;
         });
@@ -1022,6 +1067,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (!alreadyStreaming) {
             patch.status = "idle";
             patch.sessionStatus = "idle";
+            patch.backgroundTaskCount = 0;
           }
           return patch;
         });
@@ -1095,6 +1141,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         pendingUserMessages: [],
         status: "idle",
         sessionStatus: "idle",
+        backgroundTaskCount: 0,
       };
       if (s.activeResponse?.state === "streaming") {
         patch.activeResponse = {
@@ -1110,7 +1157,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // genuinely still running may briefly revert the sidebar dot — the helper's
     // "never fights the poller" contract doesn't hold here. Self-corrects on the
     // real idle event.
-    patchConversationStatusInCache(sessionId, "idle");
+    patchConversationStatusInCache(sessionId, "idle", get().backgroundTaskCount);
     // Mirror the session.status handler: a sub-agent's row lives in its parent's
     // child-sessions list, not the sidebar, so refresh the rail in lockstep.
     const snapshot = queryClient?.getQueryData<Session>(["session", sessionId]);
@@ -1184,6 +1231,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         interruptedResponseIds: [],
         status: "idle",
         sessionStatus: "idle",
+        backgroundTaskCount: 0,
         isNativeTerminalSession: false,
         nativeVendorOwnsModel: false,
         boundAgentId: null,
@@ -1212,6 +1260,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         codexModelOptions: [],
         terminalPending: false,
         viewers: [],
+        // Drop any queued "Attach to agent" chip that the outgoing session's
+        // composer hadn't drained yet, so it can't bleed into the incoming
+        // session's composer (which drains the store on mount). Same reset
+        // discipline as ``viewers`` above.
+        pendingComposerAttachments: [],
         sandboxStatus: null,
         abortController: null,
         historyGeneration: s.historyGeneration + 1,
@@ -1280,6 +1333,16 @@ export const useChatStore = create<ChatState>((set, get) => ({
       set({ flashItemId: null });
     }, FLASH_DURATION_MS);
   },
+
+  addComposerAttachment: (attachment) => {
+    set((s) => {
+      const k = composerAttachmentKey(attachment);
+      if (s.pendingComposerAttachments.some((a) => composerAttachmentKey(a) === k)) return s;
+      return { pendingComposerAttachments: [...s.pendingComposerAttachments, attachment] };
+    });
+  },
+
+  clearPendingComposerAttachments: () => set({ pendingComposerAttachments: [] }),
 
   compact: async () => {
     const { conversationId } = get();
@@ -1981,6 +2044,10 @@ async function bindStream(
         // The voided page's stale early-return skips its own flag clear.
         loadingMoreHistory: false,
         sessionStatus: session.status,
+        // Re-show "N background tasks still running" after a reload/navigate-back: the
+        // live SSE edge that set this is long gone, so the count rides in on
+        // the snapshot (server keeps it sticky past the trailing PTY `idle`).
+        backgroundTaskCount: session.backgroundTaskCount ?? 0,
         selectedEffort: effectiveEffort,
         selectedModel: effectiveModel,
         // Session truth for the `/model` readout — overrides the snapshot
@@ -2111,6 +2178,9 @@ const RECONNECT_BACKFILL_MAX_PAGES = 4;
  */
 function reconnectStatusPatch(session: Session, s: ChatState): Partial<ChatState> {
   const patch: Partial<ChatState> = { sessionStatus: session.status };
+  // Recover the background-shell tally across the gap too, so the spinner
+  // returns to "N background tasks still running" rather than vanishing on reconnect.
+  patch.backgroundTaskCount = session.backgroundTaskCount ?? 0;
   if (session.contextWindow != null) patch.contextWindow = session.contextWindow;
   if (session.lastTotalTokens != null) patch.tokensUsed = session.lastTotalTokens;
   if (session.totalCostUsd != null) patch.sessionCostUsd = session.totalCostUsd;
@@ -3528,6 +3598,24 @@ export function handleSessionEvent(event: StreamEvent): void {
           return {};
         }
         const patch: Partial<ChatState> = { sessionStatus: event.status };
+        // The background-shell tally is STICKY. Only the Stop-hook-derived
+        // status carries an authoritative count (the forwarder relabels its
+        // `idle` to `waiting` and attaches `background_task_count`); the
+        // PTY-activity watcher's running/idle edges carry none (`undefined`).
+        // A claude-native turn that ends with shells still running emits, in
+        // order: the Stop hook's `waiting`(+count), then — ~1s later, once the
+        // pane quiesces — a bare PTY-activity `idle` (no count). If that
+        // trailing `idle` reset the count the spinner would vanish a beat
+        // after it appeared. So: an explicit count is authoritative (a Stop
+        // hook's `0` clears it, so a finished shell drops the indicator on the
+        // next turn end; a positive count sets it); `undefined` leaves it
+        // untouched; and a new turn (`running`) or a failure clears it —
+        // mirroring the server's `_publish_status`.
+        if (event.backgroundTaskCount !== undefined) {
+          patch.backgroundTaskCount = event.backgroundTaskCount;
+        } else if (event.status === "running" || event.status === "failed") {
+          patch.backgroundTaskCount = 0;
+        }
         if (
           event.responseId !== undefined &&
           (event.status === "running" || event.status === "waiting")
@@ -3603,7 +3691,11 @@ export function handleSessionEvent(event: StreamEvent): void {
       // chat's "Working…" indicator — the exact desync users hit on a
       // claude-native session (chat clears/sets working instantly while
       // the sidebar dot stays stale).
-      patchConversationStatusInCache(event.conversationId, event.status);
+      patchConversationStatusInCache(
+        event.conversationId,
+        event.status,
+        useChatStore.getState().backgroundTaskCount,
+      );
       // On turn completion, refresh the Agents-rail preview for this
       // conversation. A child (added agent) finishing a turn leaves a stale
       // last_message_preview in its parent's child-sessions list (the runner
@@ -3887,14 +3979,17 @@ export function handleSessionEvent(event: StreamEvent): void {
 function patchConversationStatusInCache(
   conversationId: string,
   sessionStatus: SessionStatus,
+  backgroundTaskCount = 0,
 ): void {
   if (queryClient === null) return;
+  // Mirror the in-chat working indicator: a claude-native session that has
+  // settled to `idle` but still has background shells running must keep the
+  // sidebar spinner lit, exactly as `computeShowsWorking` keeps the chat
+  // indicator visible. `failed` still wins (the count is cleared on failure).
+  const working =
+    sessionStatus === "running" || sessionStatus === "waiting" || backgroundTaskCount > 0;
   const listStatus: NonNullable<Conversation["status"]> =
-    sessionStatus === "running" || sessionStatus === "waiting"
-      ? "running"
-      : sessionStatus === "failed"
-        ? "failed"
-        : "idle";
+    sessionStatus === "failed" ? "failed" : working ? "running" : "idle";
   queryClient.setQueriesData<InfiniteData<ConversationsPage>>(
     { queryKey: ["conversations"] },
     (data) => {
