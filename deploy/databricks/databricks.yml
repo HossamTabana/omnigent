@@ -7,6 +7,20 @@
 bundle:
   name: omnigent
 
+# The per-deploy app payload — the app wheels plus the generated
+# src/pyproject.toml + src/uv.lock — is kept untracked AND is listed in
+# .git/info/exclude locally (so it never dirties deploy.py's clean-tree gate).
+# But `databricks bundle deploy` honors git ignore rules (.gitignore AND
+# .git/info/exclude) for its file sync, so without this it silently drops the
+# dependency files from the app source folder → the app boots with "No
+# dependencies file found. Skipping installation." and keeps running its stale,
+# previously-installed environment. sync.include force-uploads them regardless.
+sync:
+  include:
+    - src/pyproject.toml
+    - src/uv.lock
+    - src/*.whl
+
 variables:
   app_name:
     description: "Databricks App name (e.g. omnigent)."
