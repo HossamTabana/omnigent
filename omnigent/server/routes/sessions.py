@@ -17930,10 +17930,10 @@ def create_sessions_router(
             )
         if status >= 400:
             error = payload.get("error", {})
+            # OmnigentError derives http_status from code; pass the runner's code, not a status.
             raise OmnigentError(
                 error.get("message", "Terminal transfer failed"),
-                code=error.get("code", "internal_error"),
-                http_status=status,
+                code=error.get("code", ErrorCode.INTERNAL_ERROR),
             )
 
         _publish_and_persist_resource_event(
