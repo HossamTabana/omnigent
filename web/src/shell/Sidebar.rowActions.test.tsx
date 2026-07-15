@@ -99,6 +99,7 @@ function mockConversations(conversations: Conversation[]) {
 function serverInfo(overrides: Partial<ServerInfo> = {}): ServerInfo {
   return {
     accounts_enabled: false,
+    single_user: false,
     login_url: null,
     needs_setup: false,
     databricks_features: false,
@@ -142,6 +143,9 @@ function renderSidebar(activeId?: string, info?: ServerInfo) {
 beforeEach(() => {
   mocks.rename.mutate.mockReset();
   useConvMock.mockReset();
+  // Pins persist to localStorage; clear it so a seeded pin doesn't leak into
+  // the next test's row state.
+  localStorage.clear();
   // The read-state mirror is module-level (in-memory), so reset it between
   // tests to avoid a mark-unread leaking into later rows.
   __resetReadStateForTests();
@@ -280,6 +284,43 @@ describe("double-click to rename", () => {
   });
 });
 
+describe("pinned row project flyout", () => {
+  // Pinning lifts a session out of its project folder into the flat "Pinned"
+  // section, so the folder no longer conveys which project it came from. The
+  // hover flyout restores that cue: title + folder icon + project name. It
+  // opens on focus/hover — fire focus on the row link and await the portal.
+
+  it("shows the project name in the flyout for a pinned, project-owned row", async () => {
+    // Seed the pin so the row lifts into the always-expanded Pinned section
+    // (a project-owned row otherwise sits inside a collapsed project folder).
+    localStorage.setItem("omnigent:pinned-conversation-ids", JSON.stringify(["conv_1"]));
+    mockConversations([{ ...CONV, labels: { omni_project: "Moonshot" } }]);
+    renderSidebar();
+    expect(screen.getByText("Pinned")).toBeInTheDocument();
+
+    // Focus opens the HoverCard (onFocus is one of its open triggers); the
+    // content is portalled, so query the whole document after the open delay.
+    fireEvent.focus(screen.getByRole("link", { name: /My Session/ }));
+    const flyout = await screen.findByTestId("pinned-project-flyout");
+    expect(within(flyout).getByText("Moonshot")).toBeInTheDocument();
+    expect(within(flyout).getByText("My Session")).toBeInTheDocument();
+  });
+
+  it("renders no project flyout for a pinned row with no project", () => {
+    // No project label → nothing to surface, so the row keeps its plain native
+    // title tooltip and never mounts a hover-card trigger.
+    localStorage.setItem("omnigent:pinned-conversation-ids", JSON.stringify(["conv_1"]));
+    mockConversations([{ ...CONV, labels: {} }]);
+    renderSidebar();
+    expect(screen.getByText("Pinned")).toBeInTheDocument();
+
+    const row = screen.getByRole("link", { name: /My Session/ });
+    expect(row).not.toHaveAttribute("data-slot", "hover-card-trigger");
+    fireEvent.focus(row);
+    expect(screen.queryByTestId("pinned-project-flyout")).toBeNull();
+  });
+});
+
 describe("mark as unread", () => {
   it("re-lights the row's unread dot via an explicit mark-unread", () => {
     renderSidebar();
@@ -383,6 +424,33 @@ describe("sharing kill switch", () => {
 
     fireEvent.contextMenu(screen.getByRole("link", { name: /My Session/ }));
 
+    expect(screen.getByTestId("share-conversation")).not.toHaveAttribute("data-disabled");
+  });
+
+  it("omits the row's Share item entirely in single-user mode", () => {
+    // Explicit single_user marker: no other users to share with, so the item
+    // is removed — not just disabled like the sharing-off case.
+    // isCurrentServerLocal is mocked false, so this exercises the single-user
+    // gate specifically (not the local-server path).
+    mockConversations([CONV]);
+    renderSidebar(undefined, serverInfo({ single_user: true }));
+
+    fireEvent.contextMenu(screen.getByRole("link", { name: /My Session/ }));
+
+    expect(screen.queryByTestId("share-conversation")).toBeNull();
+    // Other row actions still render — only Share is gated on single-user.
+    expect(screen.getByTestId("rename-conversation")).toBeInTheDocument();
+  });
+
+  it("keeps the row's Share item on a multi-user header-auth deploy (not single_user)", () => {
+    // Header-auth multi-user (SSO proxy): accounts off AND no login_url, same
+    // shape as single-user, but single_user false — the item must stay.
+    mockConversations([CONV]);
+    renderSidebar(undefined, serverInfo({ single_user: false }));
+
+    fireEvent.contextMenu(screen.getByRole("link", { name: /My Session/ }));
+
+    expect(screen.getByTestId("share-conversation")).toBeInTheDocument();
     expect(screen.getByTestId("share-conversation")).not.toHaveAttribute("data-disabled");
   });
 });
