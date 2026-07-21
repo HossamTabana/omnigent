@@ -58,6 +58,7 @@ import {
 } from "@/hooks/useWorkspaceChangedFiles";
 import { cn } from "@/lib/utils";
 import { isNativeWrapper as isNativeWrapperLabel } from "@/lib/nativeCodingAgents";
+import { isCodexNativeSession } from "@/lib/codexPlanMode";
 import { useServerInfo } from "@/lib/CapabilitiesContext";
 import { isSingleUserMode } from "@/lib/capabilities";
 import { isCurrentServerLocal } from "@/lib/serverOrigin";
@@ -281,7 +282,7 @@ export function AppShell() {
   });
 
   const debugMode = useDebugMode();
-  const { data: conversationsData } = useConversations();
+  const { data: conversationsData } = useConversations("", true);
   // Surface sessions needing attention as OS notifications + a dock badge.
   // Mounted here (inside the Router) so it can navigate on click and knows
   // the active conversation id, which suppresses the notification/badge for
@@ -343,6 +344,10 @@ export function AppShell() {
   const sessionLabels = { ...activeConv?.labels, ...activeSession?.labels };
   const terminalFirst = sessionLabels["omnigent.ui"] === "terminal";
   const isClaudeNative = sessionLabels["omnigent.wrapper"] === "claude-code-native-ui";
+  // Harnesses that publish a todo list to the TodoPanel: Claude via
+  // TodoWrite, and Codex which maps its plan updates to the same schema.
+  const isCodexNative = isCodexNativeSession({ labels: sessionLabels });
+  const todosSupported = isClaudeNative || isCodexNative;
   // Native-CLI wrapper of either family. Keys harness behavior gates
   // (composer slash commands, `/model`); terminal-first SDK sessions
   // (embedded Omnigent REPL terminal) have NO wrapper label and must
@@ -368,17 +373,20 @@ export function AppShell() {
   // three-dot menu render the exact same set (they can't drift apart).
   // Stop session is not a header action — it lives in the sidebar row's
   // kebab menu (see Sidebar's ConversationRow).
-  // Read-write or higher can manage sharing; top-level only. Sharing a
+  // Only the owner can manage sharing; top-level only. Sharing a
   // sub-agent is a no-op anyway — children inherit the parent's grants via
   // the server's parent-delegation path — so we hide the affordance.
   // Also hidden in single-user mode: with no other users to grant to, the
   // affordance is meaningless (unlike the local-server / sharing-off cases
   // below, which stay present-but-disabled with an explanatory tooltip).
+  // ``isOwnerLevel`` is permissive on a null level (single-user / still
+  // loading), matching the sidebar's owner-only Share gate and the terminal
+  // ``readOnly`` gate below; the authoritative snapshot level resolves it.
   const serverInfo = useServerInfo();
   const canShare =
     !!conversationId &&
     isKnownTopLevel &&
-    (permissionLevel === null || permissionLevel >= 3) &&
+    isOwnerLevel(permissionLevel) &&
     !isSingleUserMode(serverInfo);
   // Two independent reasons the Share affordance is present-but-disabled: a
   // local server can't produce openable links, and a deployed server whose
@@ -511,14 +519,14 @@ export function AppShell() {
         // empty and ``agentSupportsShells`` starts false while the agent
         // loads, so native sessions don't flash the tab.
         terminals: !hideTerminalsTab && (railTerminals.length > 0 || agentSupportsShells),
-        todos: isClaudeNative && todos.length > 0,
+        todos: todosSupported && todos.length > 0,
       }) as const,
     [
       showFilesPanel,
       hideTerminalsTab,
       railTerminals.length,
       agentSupportsShells,
-      isClaudeNative,
+      todosSupported,
       todos.length,
     ],
   );
@@ -1010,8 +1018,8 @@ export function AppShell() {
         return next;
       });
     },
-    [setSearchParams],
-  ); // eslint-disable-line react-hooks/exhaustive-deps
+    [clearFileViewerUrl, setSearchParams],
+  );
 
   // Switch the workspace rail's tab. The side effect (closing any open
   // file + its comments + URL) lives here, not in WorkspacePanel, so the
@@ -1296,7 +1304,7 @@ export function AppShell() {
                     hideTerminalsTab,
                     showShellsTab: railTabsAvailable.terminals,
                     terminalsLength: railTerminals.length,
-                    isClaudeNative,
+                    todosSupported,
                     todosCompleted,
                     todosTotal: todos.length,
                     debugMode,
@@ -1344,7 +1352,7 @@ export function AppShell() {
                       terminalsLength={railTerminals.length}
                       subagentsWorking={subagentsWorking}
                       agentCount={agentCount}
-                      isClaudeNative={isClaudeNative}
+                      todosSupported={todosSupported}
                       todosCompleted={todosCompleted}
                       todosTotal={todos.length}
                       rootSessionId={rootSessionId}
