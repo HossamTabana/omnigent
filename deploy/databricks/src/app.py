@@ -222,6 +222,19 @@ try:
     if _extra_agents:
         os.environ.setdefault("OMNIGENT_BUILTIN_AGENT_DIRS", os.pathsep.join(_extra_agents))
 
+    # ── Owner-added: SPA shipped OUTSIDE the wheel (NOT upstream) ──────
+    # Databricks Apps rejects any deployment-source file over 10 MB, and from
+    # omnigent 0.11.0 the wheel with the SPA baked in is 11.28 MB, so the
+    # deploy aborts ("File size imported ... exceeded max size (10485760)").
+    # Upstream's only documented fallback is --skip-web-ui, which drops the web
+    # UI entirely. Instead we build the wheel with --skip-web-ui and ship the
+    # SPA as loose files in ./web-ui (every asset well under 10 MB), then point
+    # the server at them with OMNIGENT_WEB_UI_DIST — the hook upstream provides
+    # for exactly this case (see omnigent/server/app.py _WEB_UI_DIST).
+    _web_ui_dist = Path(__file__).resolve().parent / "web-ui"
+    if (_web_ui_dist / "index.html").is_file():
+        os.environ.setdefault("OMNIGENT_WEB_UI_DIST", str(_web_ui_dist))
+
     # A single-user marker here would serve un-proxied requests as "local".
     _exposure = warn_if_single_user_exposed("0.0.0.0")
     if _exposure:

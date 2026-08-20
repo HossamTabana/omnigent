@@ -20,6 +20,9 @@ sync:
     - src/pyproject.toml
     - src/uv.lock
     - src/*.whl
+    # The SPA is shipped outside the wheel (Apps rejects files > 10 MB) and is a
+    # build artifact kept in .git/info/exclude, so it needs the same force-upload.
+    - src/web-ui/**
 
 variables:
   app_name:
