@@ -61,8 +61,16 @@ resources:
             value_from: artifact_volume
           - name: OTEL_TRACES_SAMPLER
             value: 'always_on'
-          - name: OMNIGENT_FEATURES
-            value: "${var.features}"
+          # Fork-owned: upstream emits OMNIGENT_FEATURES here, but deploy.py's
+          # --features defaults to "" and the Databricks Apps API rejects an env
+          # entry whose value is empty ("Must specify environment variable source
+          # using either `value` or `valueFrom`"), which aborts `bundle run`.
+          # Omitting the var is EXACTLY equivalent to the empty default —
+          # feature_flags.py: "Unset or empty means every release feature is off"
+          # (and an unknown placeholder value would fail startup). To enable a
+          # feature later, restore the two lines below and pass --features:
+          #   - name: OMNIGENT_FEATURES
+          #     value: "${var.features}"
       resources:
         - name: postgres
           postgres:
