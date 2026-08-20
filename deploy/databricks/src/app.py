@@ -16,6 +16,24 @@ import traceback
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, force=True)
 logger = logging.getLogger("omnigent-app")
 
+# ── Owner-added: SPA shipped OUTSIDE the wheel (NOT upstream) ─────────────
+# Databricks Apps rejects any deployment-source file over 10 MB; from omnigent
+# 0.11.0 the wheel with the SPA baked in is 11.28 MB. We build the wheel with
+# OMNIGENT_SKIP_WEB_UI=true and ship the SPA as loose files in ./web-ui, then
+# point the server at them via OMNIGENT_WEB_UI_DIST (the hook upstream provides
+# for exactly this case).
+#
+# MUST run BEFORE importing omnigent.server.app: that module resolves
+# _WEB_UI_DIST from this env var at IMPORT time, so setting it later leaves the
+# server on the wheel-internal default, finds no bundle, and serves the
+# API-only landing page instead of the web UI.
+from pathlib import Path as _Path  # noqa: E402
+
+_web_ui_dist = _Path(__file__).resolve().parent / "web-ui"
+if (_web_ui_dist / "index.html").is_file():
+    os.environ.setdefault("OMNIGENT_WEB_UI_DIST", str(_web_ui_dist))
+    logger.info("web UI served from loose files: %s", _web_ui_dist)
+
 # ── Lakebase token cache ──────────────────────────────────
 #
 # Lakebase tokens are valid for ~60 minutes. The previous design
@@ -222,18 +240,6 @@ try:
     if _extra_agents:
         os.environ.setdefault("OMNIGENT_BUILTIN_AGENT_DIRS", os.pathsep.join(_extra_agents))
 
-    # ── Owner-added: SPA shipped OUTSIDE the wheel (NOT upstream) ──────
-    # Databricks Apps rejects any deployment-source file over 10 MB, and from
-    # omnigent 0.11.0 the wheel with the SPA baked in is 11.28 MB, so the
-    # deploy aborts ("File size imported ... exceeded max size (10485760)").
-    # Upstream's only documented fallback is --skip-web-ui, which drops the web
-    # UI entirely. Instead we build the wheel with --skip-web-ui and ship the
-    # SPA as loose files in ./web-ui (every asset well under 10 MB), then point
-    # the server at them with OMNIGENT_WEB_UI_DIST — the hook upstream provides
-    # for exactly this case (see omnigent/server/app.py _WEB_UI_DIST).
-    _web_ui_dist = Path(__file__).resolve().parent / "web-ui"
-    if (_web_ui_dist / "index.html").is_file():
-        os.environ.setdefault("OMNIGENT_WEB_UI_DIST", str(_web_ui_dist))
 
     # A single-user marker here would serve un-proxied requests as "local".
     _exposure = warn_if_single_user_exposed("0.0.0.0")
