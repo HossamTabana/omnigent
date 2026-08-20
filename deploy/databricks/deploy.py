@@ -39,14 +39,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from databricks.sdk import WorkspaceClient
 
-# Fork-owned: raised from upstream's conservative 10 MB. This guard is NOT a
-# platform limit — Databricks workspace files allow 500 MB
-# (docs.databricks.com/aws/en/files/workspace#file-size-limit) and Apps
-# documents no source-code size limit. At omnigent 0.11.0 the main wheel
-# (SPA: monaco 3.5 MB + shiki 2 MB + pdf worker 1.3 MB) reached 11.28 MB and
-# upstream's guard aborted the deploy, whose only suggested fallback is
-# --skip-web-ui (drops the web UI entirely — unacceptable here).
-_WORKSPACE_WHEEL_LIMIT_BYTES = 100 * 1024 * 1024
+_WORKSPACE_WHEEL_LIMIT_BYTES = 10 * 1024 * 1024
 _APP_REQUIRES_PYTHON = ">=3.12,<3.13"
 # Public PyPI by default. Set UV_INDEX_URL to lock against a private mirror or
 # proxy instead (see run_uv_lock).
